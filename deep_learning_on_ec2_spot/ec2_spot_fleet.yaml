@@ -1,0 +1,252 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: 'This is CFN Template creates a EC2 Spot Fleet with Spot instances which run the DL Training Models'
+Mappings:
+  AWSRegionArch2AMI:
+    us-east-1:
+      DLAMIAMAZONLINUX2: ami-0b0b075706e19de29
+      DLAMIUBUNTU1604: ami-06306b7120b778175
+      DLBASEAMIUBUNTU1604: ami-0881ccbe7147fe70f
+      DLBASEAMIUBUNTU1804: ami-0e60fa461a16192c0
+
+Metadata:
+  Author:
+    Description: Jayaprakash Alawala <alawalajp@gmail.com>
+  License:
+    Description: 'Copyright [2020] [Jayaprakash Alawala]
+
+                  Licensed under the Apache License, Version 2.0 (the "License");
+                  you may not use this file except in compliance with the License.
+                  You may obtain a copy of the License at
+
+                    http://www.apache.org/licenses/LICENSE-2.0
+
+                  Unless required by applicable law or agreed to in writing, software
+                  distributed under the License is distributed on an "AS IS" BASIS,
+                  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+                  See the License for the specific language governing permissions and
+                  limitations under the License.'
+
+
+Outputs:
+  awsRegionId:
+    Description: The AWS Region ID your template was launched in
+    Value: !Ref AWS::Region
+
+  CTCDLLaunchTemplate:
+    Description: CTCDLLaunchTemplate
+    Value: !Ref CTCDLLaunchTemplate
+    Export:
+      Name: !Sub '${AWS::StackName}-CTCDLLaunchTemplate'
+
+
+Parameters:
+  sourceCidr:
+    Default: 0.0.0.0/0
+    Description: Optional - CIDR/IP range for instance ssh/http access and load balancer http
+      access
+    Type: String
+
+  NetworkStackName:
+    Description: >-
+      Name of an active CloudFormation stack that contains the networking
+      resources, such as the subnet and security group, that will be used in
+      this stack.
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: '^[a-zA-Z][-a-zA-Z0-9]*$'
+    Default: CTCVPC
+
+  InstanceStackName:
+    Description: >-
+      Name of an active CloudFormation stack that contains the Instance used
+      for creating a secondary EBS volume for the storing DL training datasets
+      and checkpoints
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: '^[a-zA-Z][-a-zA-Z0-9]*$'
+    Default: CTCInstance
+
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the EC2 instances
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: 'CTC-KeyPair'
+    MinLength: 1
+
+Resources:
+
+  CTCInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "CTC-DL-Training"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+        Version: 2012-10-17
+      Path: /
+      Policies:
+        - PolicyName: CTC-EC2-permissions-dl-training
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ec2:AttachVolume'
+                  - 'ec2:DeleteVolume'
+                  - 'ec2:DescribeVolumeStatus'
+                  - 'ec2:CancelSpotFleetRequests'
+                  - 'ec2:CreateTags'
+                  - 'ec2:DescribeVolumes'
+                  - 'ec2:CreateSnapshot'
+                  - 'ec2:DescribeSpotInstanceRequests'
+                  - 'ec2:DescribeSnapshots'
+                  - 'ec2:CreateVolume'
+                Resource: "*"
+
+  CTCInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    DependsOn:
+      - CTCInstanceRole
+    Properties:
+      InstanceProfileName: "CTCInstanceProfile"
+      Path: /
+      Roles:
+        - Ref: CTCInstanceRole
+
+  CTCSpotFleetRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "CTCSpotFleetRole"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - spotfleet.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2SpotFleetTaggingRole
+      Path: /
+
+
+
+  CTCDLLaunchTemplate:
+    DependsOn:
+      - CTCInstanceProfile
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        InstanceType: p3.2xlarge
+        KeyName : !Ref KeyName
+        ImageId:
+          Fn::FindInMap:
+            - AWSRegionArch2AMI
+            - Ref: AWS::Region
+            - DLAMIUBUNTU1604
+        IamInstanceProfile:
+          Arn:
+            Fn::GetAtt:
+              - CTCInstanceProfile
+              - Arn
+
+        SecurityGroupIds:
+          - !ImportValue
+           'Fn::Sub': '${InstanceStackName}-CTCSecurityGroup'
+
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: "CTCDLLaunchTemplate"
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+
+            # Get instance ID, Instance AZ, Volume ID and Volume AZ
+            INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+            INSTANCE_AZ=$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone)
+            export AWS_REGION=$(curl -s  169.254.169.254/latest/dynamic/instance-identity/document | jq -r '.region')
+
+            VOLUME_ID=$(aws ec2 describe-volumes --region $AWS_REGION --filter "Name=tag:Name,Values=DL-datasets-checkpoints" --query "Volumes[].VolumeId" --output text)
+            VOLUME_AZ=$(aws ec2 describe-volumes --region $AWS_REGION --filter "Name=tag:Name,Values=DL-datasets-checkpoints" --query "Volumes[].AvailabilityZone" --output text)
+
+            # Proceed if Volume Id is not null or unset
+            if [ $VOLUME_ID ]; then
+            # Check if the Volume AZ and the instance AZ are same or different.
+            # If they are different, create a snapshot and then create a new volume in the instance's AZ.
+            if [ $VOLUME_AZ != $INSTANCE_AZ ]; then
+            SNAPSHOT_ID=$(aws ec2 create-snapshot \
+            --region $AWS_REGION \
+            --volume-id $VOLUME_ID \
+            --description "`date +"%D %T"`" \
+            --tag-specifications 'ResourceType=snapshot,Tags=[{Key=Name,Value=DL-datasets-checkpoints-snapshot}]' \
+            --query SnapshotId --output text)
+
+            aws ec2 wait --region $AWS_REGION snapshot-completed --snapshot-ids $SNAPSHOT_ID
+            aws ec2 --region $AWS_REGION  delete-volume --volume-id $VOLUME_ID
+
+            VOLUME_ID=$(aws ec2 create-volume \
+            --region $AWS_REGION \
+            --availability-zone $INSTANCE_AZ \
+            --snapshot-id $SNAPSHOT_ID \
+            --volume-type gp2 \
+            --tag-specifications 'ResourceType=volume,Tags=[{Key=Name,Value=DL-datasets-checkpoints}]' \
+            --query VolumeId --output text)
+            aws ec2 wait volume-available --region $AWS_REGION --volume-id $VOLUME_ID
+            fi
+            # Attach volume to instance
+            aws ec2 attach-volume \
+            --region $AWS_REGION --volume-id $VOLUME_ID \
+            --instance-id $INSTANCE_ID --device /dev/sdf
+            sleep 10
+
+            # Mount volume and change ownership, since this script is run as root
+            mkdir /dltraining
+            mount /dev/xvdf /dltraining
+            chown -R ubuntu: /dltraining/
+            cd /home/ubuntu/
+
+            # Get training code
+            git clone https://github.com/awslabs/ec2-spot-labs.git
+            chown -R ubuntu: ec2-spot-labs
+            cd ec2-spot-labs/ec2-spot-deep-learning-training/
+
+            # Initiate training using the tensorflow_36 conda environment
+            sudo -H -u ubuntu bash -c "source /home/ubuntu/anaconda3/bin/activate tensorflow_p36; python ec2_spot_keras_training.py"
+            fi
+
+            # After training, clean up by cancelling spot requests and terminating itself
+            SPOT_FLEET_REQUEST_ID=$(aws ec2 describe-spot-instance-requests --region $AWS_REGION --filter "Name=instance-id,Values='$INSTANCE_ID'" --query "SpotInstanceRequests[].Tags[?Key=='aws:ec2spot:fleet-request-id'].Value[]" --output text)
+            aws ec2 cancel-spot-fleet-requests --region $AWS_REGION --spot-fleet-request-ids $SPOT_FLEET_REQUEST_ID --terminate-instances
+      LaunchTemplateName: "CTCDLLaunchTemplate"
+
+  CTCDLSpotFleet:
+    Type: AWS::EC2::SpotFleet
+    DependsOn: CTCDLLaunchTemplate
+    Properties:
+      SpotFleetRequestConfigData:
+        AllocationStrategy: capacityOptimized
+        IamFleetRole:
+          Fn::GetAtt:
+            - CTCSpotFleetRole
+            - Arn
+        LaunchTemplateConfigs:
+          - LaunchTemplateSpecification:
+              LaunchTemplateId: !Ref CTCDLLaunchTemplate
+              Version: !GetAtt CTCDLLaunchTemplate.LatestVersionNumber
+            Overrides:
+              - SubnetId: !ImportValue
+                  'Fn::Sub': '${NetworkStackName}-CTCPublicSubnet1'
+        ReplaceUnhealthyInstances: true
+        TargetCapacity: 1
+        Type: maintain
+...

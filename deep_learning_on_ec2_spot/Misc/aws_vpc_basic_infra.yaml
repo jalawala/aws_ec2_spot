@@ -1,0 +1,408 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: 'This is CFN Template creates a Basic AWS VPC Infrastructure which can be used for your deployment or for testing'
+Mappings:
+  CidrMappings:
+    public-subnet-1:
+      CIDR: 10.0.0.0/24
+    public-subnet-2:
+      CIDR: 10.0.1.0/24
+    public-subnet-3:
+      CIDR: 10.0.2.0/24
+    private-subnet-1:
+      CIDR: 10.0.3.0/24
+    private-subnet-2:
+      CIDR: 10.0.4.0/24
+    private-subnet-3:
+      CIDR: 10.0.5.0/24
+    vpc:
+      CIDR: 10.0.0.0/16
+
+  AmazonLinux2AMI:
+    us-east-2:
+      AMI: ami-0f7919c33c90f5b58
+    us-east-1:
+      AMI: ami-0323c3dd2da7fb37d
+    us-west-1:
+      AMI: ami-06fcc1f0bc2c8943f
+    us-west-2:
+      AMI: ami-0d6621c01e8c2de2c
+    af-south-1:
+      AMI: ami-N/A
+    ap-east-1:
+      AMI: ami-N/A
+    ap-south-1:
+      AMI: ami-0470e33cd681b2476
+    ap-northeast-3:
+      AMI: ami-no
+    ap-northeast-2:
+      AMI: ami-01288945bd24ed49a
+    ap-southeast-1:
+      AMI: ami-0ec225b5e01ccb706
+    ap-southeast-2:
+      AMI: ami-0970010f37c4f9c8d
+    ap-northeast-1:
+      AMI: ami-0f310fced6141e627
+    ca-central-1:
+      AMI: ami-054362537f5132ce2
+    eu-central-1:
+      AMI: ami-076431be05aaf8080
+    eu-west-1:
+      AMI: ami-06ce3edf0cff21f07
+    eu-west-2:
+      AMI: ami-01a6e31ac994bbc09
+    eu-south-1:
+      AMI: ami-N/A
+    eu-west-3:
+      AMI: ami-00077e3fed5089981
+    eu-north-1:
+      AMI: ami-0b7a46b4bd694e8a6
+    me-south-1:
+      AMI: ami-N/A
+    sa-east-1:
+      AMI: ami-003449ffb2605a74c
+Metadata:
+  Author:
+    Description: Jayaprakash Alawala <alawalajp@gmail.com>
+  License:
+    Description: 'Copyright [2020] [Jayaprakash Alawala]
+
+                  Licensed under the Apache License, Version 2.0 (the "License");
+                  you may not use this file except in compliance with the License.
+                  You may obtain a copy of the License at
+
+                    http://www.apache.org/licenses/LICENSE-2.0
+
+                  Unless required by applicable law or agreed to in writing, software
+                  distributed under the License is distributed on an "AS IS" BASIS,
+                  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+                  See the License for the specific language governing permissions and
+                  limitations under the License.'
+
+
+Outputs:
+  awsRegionId:
+    Description: The AWS Region ID your template was launched in
+    Value: !Ref AWS::Region
+
+  CTCPublicSubnet1:
+    Description: Public subnet 1
+    Value: !Ref CTCPublicSubnet1
+    Export:
+      Name: !Sub '${AWS::StackName}-CTCPublicSubnet1'
+
+  CTCPublicSubnet2:
+    Description: Public subnet 2
+    Value: !Ref CTCPublicSubnet2
+    Export:
+      Name: !Sub '${AWS::StackName}-CTCPublicSubnet2'
+
+  CTCPrivateSubnet1:
+    Description: Private subnet 1
+    Value: !Ref CTCPrivateSubnet1
+    Export:
+      Name: !Sub '${AWS::StackName}-CTCPrivateSubnet1'
+
+  CTCPrivateSubnet2:
+    Description: Private subnet 2
+    Value: !Ref CTCPrivateSubnet2
+    Export:
+      Name: !Sub '${AWS::StackName}-CTCPrivateSubnet2'
+
+  CTCVPC:
+    Description: The VPC
+    Value: !Ref CTCVPC
+    Export:
+      Name: !Sub '${AWS::StackName}-CTCVPC'
+
+
+  CTCVPCPublicSubnets:
+    Description:  The list of public subnets in the VPC
+    Value: !Join [",", [!Ref CTCPublicSubnet1, !Ref CTCPublicSubnet2]]
+    Export:
+      Name: !Sub '${AWS::StackName}-CTCVPCPublicSubnets'
+
+
+  CTCVPCPrivateSubnets:
+    Description:  The list of private subnets in the VPC
+    Value: !Join [",", [!Ref CTCPrivateSubnet1, !Ref CTCPrivateSubnet2]]
+    Export:
+      Name: !Sub '${AWS::StackName}-CTCVPCPrivateSubnets'
+
+Parameters:
+  sourceCidr:
+    Default: 0.0.0.0/0
+    Description: Optional - CIDR/IP range for instance ssh/http access and load balancer http
+      access
+    Type: String
+
+Resources:
+  CTCVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock:
+        Fn::FindInMap:
+          - CidrMappings
+          - vpc
+          - CIDR
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: 'CTCVPC'
+
+  CTCInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    DependsOn:
+      - CTCVPC
+
+  CTCAttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    DependsOn:
+    - CTCVPC
+    - CTCInternetGateway
+    Properties:
+      InternetGatewayId: !Ref CTCInternetGateway
+      VpcId: !Ref CTCVPC
+
+
+  CTCPublicSubnet1:
+    Type: AWS::EC2::Subnet
+    DependsOn: CTCAttachGateway
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs:
+              Ref: AWS::Region
+      CidrBlock:
+        Fn::FindInMap:
+          - CidrMappings
+          - public-subnet-1
+          - CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: 'CTCPublicSubnet1'
+      VpcId: !Ref CTCVPC
+
+  CTCPublicSubnet2:
+    Type: AWS::EC2::Subnet
+    DependsOn: CTCAttachGateway
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 1
+          - Fn::GetAZs:
+              Ref: AWS::Region
+      CidrBlock:
+        Fn::FindInMap:
+          - CidrMappings
+          - public-subnet-2
+          - CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: 'CTCPublicSubnet2'
+      VpcId: !Ref CTCVPC
+
+  CTCPublicSubnet3:
+    Type: AWS::EC2::Subnet
+    DependsOn: CTCAttachGateway
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 2
+          - Fn::GetAZs:
+              Ref: AWS::Region
+      CidrBlock:
+        Fn::FindInMap:
+          - CidrMappings
+          - public-subnet-3
+          - CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: 'CTCPublicSubnet3'
+      VpcId: !Ref CTCVPC
+
+  CTCPrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs:
+              Ref: AWS::Region
+      CidrBlock:
+        Fn::FindInMap:
+          - CidrMappings
+          - private-subnet-1
+          - CIDR
+      Tags:
+        - Key: Name
+          Value: 'CTCPrivateSubnet1'
+      VpcId: !Ref CTCVPC
+
+
+  CTCPrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 1
+          - Fn::GetAZs:
+              Ref: AWS::Region
+      CidrBlock:
+        Fn::FindInMap:
+          - CidrMappings
+          - private-subnet-2
+          - CIDR
+      Tags:
+        - Key: Name
+          Value: 'CTCPrivateSubnet2'
+      VpcId: !Ref CTCVPC
+
+  CTCPrivateSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 2
+          - Fn::GetAZs:
+              Ref: AWS::Region
+      CidrBlock:
+        Fn::FindInMap:
+          - CidrMappings
+          - private-subnet-3
+          - CIDR
+      Tags:
+        - Key: Name
+          Value: 'CTCPrivateSubnet3'
+      VpcId: !Ref CTCVPC
+
+
+  CTCPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    DependsOn:
+      - CTCVPC
+      - CTCAttachGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: 'CTCPublic Route Table'
+      VpcId: !Ref CTCVPC
+
+  CTCRouteTablePrivate: # Create a route table which will be used within the VPC
+    Type: AWS::EC2::RouteTable
+    DependsOn: CTCVPC
+    # DependedOn: DefaultRoute, SubnetPrivateARouteTableAssociation, SubnetPrivateBRouteTableAssociation, SubnetPrivateCRouteTableAssociation
+    Properties:
+      VpcId: !Ref CTCVPC
+      Tags:
+        - Key: Name
+          Value: 'CTCPrivate Route Table'
+
+  CTCPublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn:
+      - CTCPublicRouteTable
+      - CTCPublicSubnet1
+      - CTCAttachGateway
+    Properties:
+      RouteTableId: !Ref CTCPublicRouteTable
+      SubnetId: !Ref CTCPublicSubnet1
+
+  CTCPublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn:
+      - CTCPublicRouteTable
+      - CTCPublicSubnet2
+      - CTCAttachGateway
+    Properties:
+      RouteTableId: !Ref CTCPublicRouteTable
+      SubnetId: !Ref CTCPublicSubnet2
+
+  CTCPublicSubnet3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn:
+      - CTCPublicRouteTable
+      - CTCPublicSubnet3
+      - CTCAttachGateway
+    Properties:
+      RouteTableId: !Ref CTCPublicRouteTable
+      SubnetId: !Ref CTCPublicSubnet3
+
+
+  CTCPrivateSubnet1RouteTableAssociation: # Associate the route table with the first of the three subnets in the VPC...
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn:
+      - CTCRouteTablePrivate
+      - CTCPrivateSubnet1
+    # DependedOn: None
+    Properties:
+      RouteTableId: !Ref CTCRouteTablePrivate
+      SubnetId: !Ref CTCPrivateSubnet1
+
+  CTCPrivateSubnet2RouteTableAssociation: # ... and the second of three subnets...
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn:
+      - CTCRouteTablePrivate
+      - CTCPrivateSubnet2
+    # DependedOn: None
+    Properties:
+      RouteTableId: !Ref CTCRouteTablePrivate
+      SubnetId: !Ref CTCPrivateSubnet2
+
+  CTCPrivateSubnet3RouteTableAssociation: # ... and the second of three subnets...
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn:
+      - CTCRouteTablePrivate
+      - CTCPrivateSubnet3
+    # DependedOn: None
+    Properties:
+      RouteTableId: !Ref CTCRouteTablePrivate
+      SubnetId: !Ref CTCPrivateSubnet3
+
+
+  CTCEIPNATGateway:
+    Type: AWS::EC2::EIP
+    DependsOn:
+      - CTCAttachGateway
+      - CTCVPC
+    # DependedOn: NATGateway
+    Properties:
+      Domain: CTCVPC
+
+  CTCNATGateway:
+    Type: AWS::EC2::NatGateway
+    DependsOn:
+      - CTCPublicSubnet1
+    # DependedOn:
+    Properties:
+      AllocationId: !GetAtt CTCEIPNATGateway.AllocationId
+      SubnetId: !Ref CTCPublicSubnet1
+
+
+  CTCPublicRoute: # Add a default route to the route table, pointing to the Internet Gateway
+    Type: AWS::EC2::Route
+    DependsOn:
+      - CTCPublicRouteTable
+      - CTCInternetGateway
+      - CTCAttachGateway
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref CTCInternetGateway
+      RouteTableId: !Ref CTCPublicRouteTable
+
+  CTCPrivateRoute: # Add a default route to the route table, pointing to the NAT Gateway
+    Type: AWS::EC2::Route
+    DependsOn:
+      - CTCRouteTablePrivate
+      - CTCNATGateway
+    # DependedOn: None
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref CTCNATGateway
+      RouteTableId: !Ref CTCRouteTablePrivate
+...
